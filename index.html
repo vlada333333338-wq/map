@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Адреси в радіусі — Черкаська область</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1d2433; background: #f4f5f7; }
+  header { padding: 14px 20px; background: #12355b; color: #fff; }
+  header h1 { margin: 0; font-size: 19px; font-weight: 600; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .8; }
+  .wrap { display: grid; grid-template-columns: 340px 1fr; gap: 14px; padding: 14px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+  .panel { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+  label:first-child { margin-top: 0; }
+  input { width: 100%; padding: 9px 10px; font-size: 15px; border: 1px solid #c9ced8; border-radius: 7px; }
+  input:focus { outline: 2px solid #2f6fb3; border-color: transparent; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .hint { font-size: 12px; color: #667085; margin-top: 4px; }
+  button { cursor: pointer; border: 0; border-radius: 7px; padding: 10px 14px; font-size: 14px; font-weight: 600; }
+  .primary { background: #2f6fb3; color: #fff; width: 100%; margin-top: 14px; }
+  .primary:disabled { background: #9db6d3; cursor: wait; }
+  .secondary { background: #e8edf4; color: #12355b; }
+  #status { margin-top: 12px; font-size: 13px; min-height: 18px; }
+  #status.err { color: #b42318; }
+  #map { height: 520px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .results { margin: 0 14px 14px; }
+  .results-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .results-head h2 { margin: 0; font-size: 17px; flex: 1; }
+  #filter { max-width: 260px; }
+  .tablebox { max-height: 520px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 7px 10px; border-bottom: 1px solid #eceef2; text-align: left; }
+  th { position: sticky; top: 0; background: #f8f9fb; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: #475467; cursor: pointer; user-select: none; }
+  tbody tr:hover { background: #f0f5fb; cursor: pointer; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .empty { padding: 20px; text-align: center; color: #667085; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Адреси в радіусі — Черкаська область</h1>
+  <p>Введи координати центру й радіус або просто клацни по карті. Дані адрес — OpenStreetMap.</p>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <label for="coords">Координати центру</label>
+    <input id="coords" placeholder="49.4444, 32.0598" value="49.4444, 32.0598">
+    <div class="hint">Широта, довгота — можна вставити прямо з Google Maps.</div>
+    <button class="secondary" id="locate" style="width:100%;margin-top:8px">📍 Моє місцезнаходження</button>
+
+    <label>Радіус</label>
+    <div class="row">
+      <input id="radius" type="number" min="1" step="any" value="500">
+      <select id="unit" style="padding:9px;border:1px solid #c9ced8;border-radius:7px;font-size:15px">
+        <option value="1">м</option>
+        <option value="1000">км</option>
+      </select>
+    </div>
+    <div class="hint">До 2,5 км — швидко (кілька секунд). Більший радіус іде через інший сервер, який буває перевантажений.</div>
+
+    <button class="primary" id="go">Знайти адреси</button>
+    <div id="status"></div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<div class="results panel">
+  <div class="results-head">
+    <h2 id="count">Адреси</h2>
+    <input id="filter" placeholder="Фільтр (вулиця, номер…)">
+    <button class="secondary" id="copy">Копіювати</button>
+    <button class="secondary" id="csv">Завантажити CSV</button>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr>
+        <th data-k="i">№</th>
+        <th data-k="city">Населений пункт</th>
+        <th data-k="street">Вулиця</th>
+        <th data-k="house">Будинок</th>
+        <th data-k="dist">Відстань, м</th>
+        <th data-k="lat">Координати</th>
+      </tr></thead>
+      <tbody id="tbody"><tr><td colspan="6" class="empty">Ще нічого не шукали.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const OVERPASS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://lz4.overpass-api.de/api/interpreter"
+];
+
+const map = L.map("map").setView([49.25, 31.6], 8);
+const baseMap = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19,
+  attribution: 'Карта &copy; Esri · Адреси &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+const satellite = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19, attribution: "Tiles &copy; Esri"
+});
+L.control.layers({ "Карта": baseMap, "Супутник": satellite }).addTo(map);
+
+let circle = null, centerMarker = null;
+const pointsLayer = L.layerGroup().addTo(map);
+let rows = [], sortKey = "dist", sortDir = 1;
+
+const $ = id => document.getElementById(id);
+const statusEl = $("status");
+function setStatus(msg, err) { statusEl.textContent = msg; statusEl.className = err ? "err" : ""; }
+
+// Шлемо запит на всі сервери одночасно, беремо найшвидшу відповідь, решту скасовуємо.
+function overpass(query, timeoutMs = 60000) {
+  const ctrls = OVERPASS.map(() => new AbortController());
+  const timer = setTimeout(() => ctrls.forEach(c => c.abort()), timeoutMs);
+  const tries = OVERPASS.map((url, i) =>
+    fetch(url, { method: "POST", body: "data=" + encodeURIComponent(query), signal: ctrls[i].signal,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" } })
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(d => { ctrls.forEach((c, j) => j !== i && c.abort()); return d; }));
+  return Promise.any(tries)
+    .catch(() => { throw new Error("сервери не відповіли"); })
+    .finally(() => clearTimeout(timer));
+}
+
+// Overpass часто перевантажений: пробуємо кілька разів із паузою
+async function overpassRetry(query, totalMs, onTry) {
+  const end = Date.now() + totalMs;
+  let n = 0, lastErr;
+  while (Date.now() < end) {
+    n++; onTry && onTry(n);
+    try { return await overpass(query, Math.min(60000, end - Date.now())); }
+    catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 4000)); }
+  }
+  throw lastErr || new Error("сервери не відповіли");
+}
+
+// Основне API OpenStreetMap: віддає всі дані в прямокутнику (до 50 000 точок за раз).
+// Ділимо коло на квадрати ~1 км; якщо квадрат задовгий — ділимо його ще на 4.
+async function osmApiBox(s, w, n, e, depth = 0) {
+  const r = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${w},${s},${e},${n}`);
+  if (r.ok) return (await r.json()).elements;
+  if (r.status === 400 && depth < 4) {
+    const mLat = (s + n) / 2, mLon = (w + e) / 2;
+    const parts = await Promise.all([
+      osmApiBox(s, w, mLat, mLon, depth + 1), osmApiBox(s, mLon, mLat, e, depth + 1),
+      osmApiBox(mLat, w, n, mLon, depth + 1), osmApiBox(mLat, mLon, n, e, depth + 1)]);
+    return parts.flat();
+  }
+  throw new Error("OSM API: HTTP " + r.status);
+}
+
+async function osmApiSearch(c, r, onProgress) {
+  const dLat = r / 111320, dLon = r / (111320 * Math.cos(c[0] * Math.PI / 180));
+  const s = c[0] - dLat, n = c[0] + dLat, w = c[1] - dLon, e = c[1] + dLon;
+  const step = 0.009, ny = Math.ceil((n - s) / step), nx = Math.ceil((e - w) / (step * 1.5));
+  const hy = (n - s) / ny, hx = (e - w) / nx;
+  const boxes = [];
+  for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) {
+    const bs = s + i * hy, bw = w + j * hx;
+    // пропускаємо квадрати, які взагалі не перетинають коло
+    const nearLat = Math.min(Math.max(c[0], bs), bs + hy), nearLon = Math.min(Math.max(c[1], bw), bw + hx);
+    if (haversine(c, [nearLat, nearLon]) <= r) boxes.push([bs, bw, bs + hy, bw + hx]);
+  }
+  const nodes = new Map(), out = new Map();
+  let done = 0;
+  const queue = boxes.slice();
+  async function worker() {
+    while (queue.length) {
+      const b = queue.shift();
+      const els = await osmApiBox(...b);
+      for (const el of els) if (el.type === "node") nodes.set(el.id, el);
+      for (const el of els) if (el.tags && el.tags["addr:housenumber"]) out.set(el.type + el.id, el);
+      onProgress && onProgress(++done, boxes.length);
+    }
+  }
+  await Promise.all([worker(), worker()]);
+  // центр будівлі = середнє її вузлів
+  const res = [];
+  for (const el of out.values()) {
+    if (el.type === "node") { res.push(el); continue; }
+    if (el.type === "way") {
+      const pts = el.nodes.map(id => nodes.get(id)).filter(Boolean);
+      if (!pts.length) continue;
+      res.push({ ...el, center: { lat: pts.reduce((a, p) => a + p.lat, 0) / pts.length,
+                                  lon: pts.reduce((a, p) => a + p.lon, 0) / pts.length } });
+    }
+  }
+  return { elements: res };
+}
+
+// Межа області — вантажимо після першого пошуку, щоб не гальмувала його
+let boundaryLoaded = false;
+function loadBoundary() {
+  if (boundaryLoaded) return;
+  boundaryLoaded = true;
+  overpass('[out:json][timeout:90];rel["boundary"="administrative"]["admin_level"="4"]["name:uk"="Черкаська область"];out geom;', 120000)
+    .then(d => {
+      const rel = d.elements && d.elements[0];
+      if (!rel) return;
+      const lines = rel.members.filter(m => m.type === "way" && m.geometry)
+        .map(m => m.geometry.map(p => [p.lat, p.lon]));
+      L.polyline(lines, { color: "#12355b", weight: 2, dashArray: "6 4", interactive: false }).addTo(map);
+    })
+    .catch(() => { boundaryLoaded = false; });
+}
+
+function parseCoords(s) {
+  const n = (s.replace(/,(?=\d)/g, ".").match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  if (n.length < 2) return null;
+  let [lat, lon] = n;
+  if (Math.abs(lat) > 90 && Math.abs(lon) <= 90) [lat, lon] = [lon, lat];
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return [lat, lon];
+}
+
+function haversine(a, b) {
+  const R = 6371008.8, r = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * r, dLon = (b[1] - a[1]) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function drawCircle(c, r) {
+  if (circle) map.removeLayer(circle);
+  if (centerMarker) map.removeLayer(centerMarker);
+  circle = L.circle(c, { radius: r, color: "#d9480f", weight: 2, fillOpacity: .08 }).addTo(map);
+  centerMarker = L.circleMarker(c, { radius: 5, color: "#d9480f", fillColor: "#d9480f", fillOpacity: 1 }).addTo(map);
+  map.fitBounds(circle.getBounds(), { padding: [20, 20] });
+}
+
+map.on("click", e => {
+  $("coords").value = e.latlng.lat.toFixed(6) + ", " + e.latlng.lng.toFixed(6);
+  search();
+});
+
+async function search() {
+  const c = parseCoords($("coords").value);
+  const r = parseFloat($("radius").value) * parseFloat($("unit").value);
+  if (!c) return setStatus("Не розумію координати. Приклад: 49.4444, 32.0598", true);
+  if (!(r > 0)) return setStatus("Радіус має бути більшим за нуль.", true);
+  if (r > 50000) return setStatus("Максимум 50 км — інакше сервер не впорається.", true);
+
+  drawCircle(c, r);
+  pointsLayer.clearLayers();
+  $("go").disabled = true;
+  const t0 = Date.now();
+  let extra = "";
+  const show = () => setStatus(`Шукаю адреси… ${Math.round((Date.now() - t0) / 1000)} с ${extra}`);
+  show();
+  const tick = setInterval(show, 1000);
+
+  const q = `[out:json][timeout:90];nwr["addr:housenumber"](around:${Math.round(r)},${c[0]},${c[1]});out center tags qt;`;
+  try {
+    let d;
+    if (r <= 2500) {
+      d = await osmApiSearch(c, r, (k, total) => { extra = `(частина ${k} з ${total})`; show(); });
+    } else {
+      try {
+        d = await overpassRetry(q, 120000, k => { extra = k > 1 ? `(сервер зайнятий, спроба ${k})` : ""; show(); });
+      } catch (e) {
+        if (r > 4000) throw e;
+        d = await osmApiSearch(c, r, (k, total) => { extra = `(запасний спосіб, частина ${k} з ${total})`; show(); });
+      }
+    }
+    clearInterval(tick);
+    const seen = new Set();
+    rows = [];
+    for (const el of d.elements) {
+      const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+      if (lat == null) continue;
+      const dist = haversine(c, [lat, lon]);
+      if (dist > r) continue;
+      const t = el.tags || {};
+      const street = t["addr:street"] || t["addr:place"] || "";
+      const city = t["addr:city"] || (t["addr:street"] ? t["addr:place"] : "") || t["addr:village"] || t["addr:town"] || "";
+      const house = t["addr:housenumber"];
+      const key = city + "|" + street + "|" + house;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ city, street, house, dist: Math.round(dist), lat, lon });
+    }
+    rows.forEach(x => L.circleMarker([x.lat, x.lon], { radius: 3, color: "#2f6fb3", weight: 1, fillOpacity: .8 })
+      .bindTooltip([x.street, x.house].filter(Boolean).join(", ")).addTo(pointsLayer));
+    sortKey = "dist"; sortDir = 1;
+    render();
+    const sec = ((Date.now() - t0) / 1000).toFixed(1);
+    setStatus(rows.length ? `Готово: ${rows.length} адрес за ${sec} с.` : "У цьому колі адрес в OpenStreetMap немає.");
+    loadBoundary();
+  } catch (e) {
+    clearInterval(tick);
+    setStatus("Не вдалося отримати дані (" + e.message + "). Спробуй ще раз, вимкни VPN або зменш радіус.", true);
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+function collator(a, b) {
+  if (typeof a === "number") return a - b;
+  return String(a).localeCompare(String(b), "uk", { numeric: true });
+}
+
+function visibleRows() {
+  const f = $("filter").value.trim().toLowerCase();
+  let list = rows.slice().sort((a, b) => sortDir * (collator(a[sortKey], b[sortKey]) ||
+    collator(a.street, b.street) || collator(a.house, b.house)));
+  if (f) list = list.filter(x => (x.city + " " + x.street + " " + x.house).toLowerCase().includes(f));
+  return list;
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch])); }
+
+function render() {
+  const list = visibleRows();
+  $("count").textContent = `Адреси (${list.length}${list.length !== rows.length ? " з " + rows.length : ""})`;
+  $("tbody").innerHTML = list.length ? list.map((x, i) => `<tr data-lat="${x.lat}" data-lon="${x.lon}">
+      <td class="num">${i + 1}</td><td>${esc(x.city || "—")}</td><td>${esc(x.street || "—")}</td>
+      <td>${esc(x.house)}</td><td class="num">${x.dist}</td>
+      <td>${x.lat.toFixed(6)}, ${x.lon.toFixed(6)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">Нічого не знайдено.</td></tr>`;
+}
+
+document.querySelectorAll("th[data-k]").forEach(th => th.addEventListener("click", () => {
+  const k = th.dataset.k === "i" ? "dist" : th.dataset.k;
+  sortDir = sortKey === k ? -sortDir : 1; sortKey = k; render();
+}));
+
+$("tbody").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-lat]");
+  if (!tr) return;
+  const p = [+tr.dataset.lat, +tr.dataset.lon];
+  map.setView(p, 18);
+  L.popup().setLatLng(p).setContent(esc(tr.children[2].textContent + ", " + tr.children[3].textContent)).openOn(map);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+
+function toTable(sep) {
+  const head = ["№", "Населений пункт", "Вулиця", "Будинок", "Відстань, м", "Широта", "Довгота"];
+  const q = v => sep === "," ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  return [head.map(q).join(sep)].concat(visibleRows().map((x, i) =>
+    [i + 1, x.city, x.street, x.house, x.dist, x.lat.toFixed(6), x.lon.toFixed(6)].map(q).join(sep))).join("\n");
+}
+
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(toTable("\t")); setStatus("Таблицю скопійовано — встав у Excel чи Google Таблиці."); }
+  catch { setStatus("Не вийшло скопіювати.", true); }
+});
+
+$("csv").addEventListener("click", () => {
+  const blob = new Blob(["﻿" + toTable(",")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "adresy.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+$("locate").addEventListener("click", () => {
+  if (!navigator.geolocation) return setStatus("Браузер не дає доступу до геолокації.", true);
+  setStatus("Визначаю, де ти…");
+  navigator.geolocation.getCurrentPosition(
+    p => { $("coords").value = p.coords.latitude.toFixed(6) + ", " + p.coords.longitude.toFixed(6); search(); },
+    () => setStatus("Не вдалося визначити місце. Дозволь доступ до геолокації (працює лише на сайті з https).", true),
+    { enableHighAccuracy: true, timeout: 15000 });
+});
+
+$("filter").addEventListener("input", render);
+$("go").addEventListener("click", search);
+["coords", "radius"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") search(); }));
+</script>
+</body>
+</html>
